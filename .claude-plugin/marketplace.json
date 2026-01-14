@@ -1,0 +1,22 @@
+{
+  "name": "mads-claude-skills",
+  "owner": {
+    "name": "Mads Vedel Saaby Christensen",
+    "email": "madsc.alba@gmail.com"
+  },
+  "metadata": {
+    "description": "Personal collection of Claude Code skills for PR reviews, code analysis, and workflow automation",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "pr-workflow-skills",
+      "description": "Skills for managing pull request workflows including review comments, feedback, and thread resolution",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/review-pr-comments"
+      ]
+    }
+  ]
+}

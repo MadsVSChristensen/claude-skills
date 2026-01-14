@@ -4,16 +4,16 @@ Personal collection of Claude Code skills for PR reviews, code analysis, and wor
 
 ## Installation
 
-Install from the marketplace:
+Add the marketplace in Claude Code:
 
-```bash
-claude mcp add-skill-marketplace /path/to/claude-skills
+```
+/plugin marketplace add MadsVSChristensen/claude-skills
 ```
 
-Or install individual plugins:
+Then install the plugin:
 
-```bash
-claude plugins add /path/to/claude-skills --plugin pr-workflow-skills
+```
+/plugin install pr-workflow-skills@mads-claude-skills
 ```
 
 ## Available Skills

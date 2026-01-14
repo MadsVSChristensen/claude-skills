@@ -43,8 +43,9 @@ Skills are instruction sets for Claude, not compiled code. Each SKILL.md contain
 
 ## Installation
 
-```bash
-claude mcp add-skill-marketplace /path/to/claude-skills
+```
+/plugin marketplace add MadsVSChristensen/claude-skills
+/plugin install pr-workflow-skills@mads-claude-skills
 ```
 
 ## Key Patterns

@@ -12,7 +12,7 @@ allowed-tools:
 
 # Review PR Comments
 
-Analyze and respond to pull request review comments, then resolve threads once addressed.
+Analyze and respond to pull request review comments using parallel investigation agents, then resolve threads once addressed.
 
 ## Arguments
 
@@ -31,6 +31,7 @@ gh api graphql -f query='
 {
   repository(owner: "OWNER", name: "REPO") {
     pullRequest(number: PR_NUMBER) {
+      title
       reviewThreads(first: 50) {
         nodes {
           id
@@ -56,35 +57,149 @@ Extract owner/repo from:
 1. The argument if it's a URL
 2. Otherwise, use `gh repo view --json owner,name`
 
-### Step 2: Analyze Each Comment
+Filter to only unresolved threads (`isResolved: false`).
 
-For each unresolved thread:
+### Step 2: Cluster Threads for Parallel Investigation
 
-1. **Read the relevant code** at the file path and line mentioned
-2. **Investigate the claim**:
-   - If it mentions a missing index, check if the index exists in migrations
-   - If it mentions a bug, check if the code actually has that bug
-   - If it mentions a pattern issue, evaluate if the concern is valid at current scale
-3. **Categorize the finding**:
-   - `RESOLVED` - Issue doesn't exist or is already fixed
-   - `VALID` - Issue exists and should be addressed
-   - `ACCEPTABLE` - Issue exists but is acceptable (document why)
-   - `NEEDS_DISCUSSION` - Requires user input
+Group related threads to optimize investigation and maintain context where it matters.
 
-### Step 3: Present Findings to User
-
-Display a summary table:
+#### Clustering Algorithm
 
 ```
-| Thread | File | Issue | Status | Proposed Response |
-|--------|------|-------|--------|-------------------|
+1. Group by file path (primary clustering)
+   - All threads on the same file go together
+   - These likely need shared context about that file's structure
+
+2. Detect "same issue" patterns (merge clusters)
+   - Scan comment bodies for: "same issue", "same here", "ditto", "+1",
+     "similar to above", "related to", or matching technical keywords
+   - If thread A references thread B's concern, merge their clusters
+
+3. Handle orphan threads
+   - Threads that don't cluster with others become single-thread clusters
+   - These are investigated independently
+```
+
+#### Cluster Data Structure
+
+Build an array of clusters:
+
+```json
+[
+  {
+    "cluster_id": "file:api/handler.go",
+    "reason": "Same file (api/handler.go)",
+    "threads": [
+      {
+        "id": "PRRT_123",
+        "path": "api/handler.go",
+        "line": 42,
+        "comments": [
+          {"id": "PRRC_456", "body": "Missing nil check", "author": "reviewer1"}
+        ]
+      },
+      {
+        "id": "PRRT_789",
+        "path": "api/handler.go",
+        "line": 67,
+        "comments": [
+          {"id": "PRRC_012", "body": "Same issue here", "author": "reviewer1"}
+        ]
+      }
+    ]
+  },
+  {
+    "cluster_id": "file:repo/query.sql",
+    "reason": "Same file (repo/query.sql)",
+    "threads": [
+      {
+        "id": "PRRT_345",
+        "path": "repo/query.sql",
+        "line": 15,
+        "comments": [
+          {"id": "PRRC_678", "body": "Missing index on email column", "author": "reviewer2"}
+        ]
+      }
+    ]
+  }
+]
+```
+
+### Step 3: Launch Parallel Investigation Agents
+
+For each cluster, launch a Task agent to investigate. Use parallel Task calls for efficiency.
+
+#### Agent Definition
+
+The investigation agent is defined in `agents/investigate-cluster/AGENT.md`. Read this file to understand the agent's expected behavior and output format.
+
+#### Agent Dispatch
+
+Use the Task tool with `subagent_type: "general-purpose"` for each cluster:
+
+```
+For each cluster in clusters:
+  Launch Task with:
+    - prompt: See template below
+    - subagent_type: "general-purpose"
+```
+
+**Launch all agents in parallel** by making multiple Task tool calls in a single response.
+
+#### Agent Prompt Template
+
+```
+Read agents/investigate-cluster/AGENT.md for your instructions.
+
+Investigate this cluster of PR review comments:
+
+{cluster_json}
+
+Return your findings as JSON per the AGENT.md output format.
+```
+
+### Step 4: Aggregate Results
+
+Collect findings from all agents and merge into a unified results array.
+
+Parse the JSON output from each agent's response and combine:
+
+```json
+{
+  "all_findings": [
+    // ... findings from all clusters merged
+  ],
+  "summary": {
+    "total_threads": 4,
+    "resolved": 2,
+    "valid": 1,
+    "acceptable": 1,
+    "needs_discussion": 0
+  }
+}
+```
+
+### Step 5: Present Findings to User
+
+Display a summary table with all findings:
+
+```
+| # | File | Issue | Status | Proposed Response |
+|---|------|-------|--------|-------------------|
 | 1 | api/handler.go:42 | Missing nil check | RESOLVED | Already handled by GetParams() |
-| 2 | repo/query.sql:15 | Missing index | VALID | Need to add migration |
+| 2 | api/handler.go:67 | Same issue here | RESOLVED | Same as above - GetParams() handles this |
+| 3 | repo/query.sql:15 | Missing index | VALID | Need to add migration |
+| 4 | utils/cache.go:23 | Race condition | ACCEPTABLE | Single-threaded access pattern |
+```
+
+Show summary counts:
+```
+Summary: 4 threads (2 RESOLVED, 1 VALID, 1 ACCEPTABLE)
 ```
 
 Ask user: "Do you want me to reply to these comments and resolve the threads marked RESOLVED/ACCEPTABLE?"
 
-### Step 4: Reply to Comments
+### Step 6: Reply to Comments
 
 For each thread the user approves, reply using:
 
@@ -99,7 +214,7 @@ Format responses based on status:
 - `VALID`: "**Acknowledged:** [what will be done to fix it]"
 - `ACCEPTABLE`: "**Acceptable:** [reasoning for why this is OK as-is]"
 
-### Step 5: Resolve Threads
+### Step 7: Resolve Threads
 
 After replying, resolve threads using GraphQL:
 
@@ -112,7 +227,7 @@ mutation {
 }'
 ```
 
-You can batch multiple resolutions in one mutation:
+Batch multiple resolutions in one mutation:
 
 ```bash
 gh api graphql -f query='
@@ -121,31 +236,6 @@ mutation {
   t2: resolveReviewThread(input: {threadId: "ID2"}) { thread { isResolved } }
 }'
 ```
-
-## Investigation Guidelines
-
-When analyzing review comments:
-
-### General Approach
-1. **Read the relevant code** - Always read the file and line mentioned in the comment
-2. **Verify the claim** - Don't assume the reviewer is correct; investigate whether the issue actually exists
-3. **Check for existing solutions** - The issue may already be handled elsewhere (utility functions, middleware, other layers)
-4. **Consider context** - Evaluate whether the concern is valid at the current scale/usage
-
-### Common Investigation Patterns
-
-| Comment Type | What to Check |
-|--------------|---------------|
-| Missing functionality | Search codebase for existing implementations |
-| Bug/vulnerability | Trace the actual code path to verify the claim |
-| Performance concern | Consider data scale, pagination, and whether optimization is premature |
-| Missing tests | Search for existing test coverage |
-| Code style/pattern | Check project conventions and consistency |
-
-### Key Questions to Answer
-- Does the issue actually exist, or is it already handled?
-- If it exists, is it a real problem at current scale?
-- What's the cost/benefit of addressing it now vs later?
 
 ## Output Format
 
@@ -156,10 +246,12 @@ After completing all actions, summarize:
 
 **PR:** #1556 - feat: Add summary API endpoints
 **Threads processed:** 4
+**Clusters investigated:** 2 (parallel)
 **Resolved:** 3
 **Needs action:** 1
 
 ### Actions Taken
+- Investigated 2 clusters in parallel
 - Replied to 4 review comments
 - Resolved 3 threads (issues already addressed or acceptable)
 - 1 thread requires code changes (see below)
